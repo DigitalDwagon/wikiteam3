@@ -2,16 +2,14 @@ import argparse
 from datetime import datetime
 import json
 import os
-import random
 import re
 import shutil
 from dataclasses import dataclass
 import sys
 import time
 import traceback
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional, Union
 import urllib.parse
-from io import BytesIO
 from pathlib import Path
 
 import requests
@@ -50,6 +48,8 @@ class Args:
 
     rezstd: bool
     rezstd_endpoint: str
+
+    local_export: Path
 
     def __post_init__(self):
         self.keys_file = Path(self.keys_file).expanduser().resolve()
@@ -370,7 +370,6 @@ def prepare_item_metadata(wikidump_dir: Path, config: Config, arg: Args) -> dict
 def upload(arg: Args):
     zstd_compressor = ZstdCompressor(bin_zstd=arg.bin_zstd, rezstd=arg.rezstd, rezstd_endpoint=arg.rezstd_endpoint)
     sevenzip_compressor = SevenZipCompressor(bin_7z=arg.bin_7z)
-    ia_keys = read_ia_keys(arg.keys_file)
     wikidump_dir = arg.wikidump_dir
     wikidump_dir.name # {prefix}-{wikidump_dumpdate}-wikidump (e.g. wiki.example.org-20230730-wikidump)
     assert wikidump_dir.name.endswith("-wikidump"), f"Expected wikidump_dir to end with -wikidump, got {wikidump_dir.name}"
@@ -421,6 +420,34 @@ def upload(arg: Args):
     print("=== Preparing metadata ===")
     metadata = prepare_item_metadata(wikidump_dir, config, arg)
 
+
+    if arg.dry_run:
+        print("=== Dry run, exiting ===")
+        return
+
+    if arg.local_export:
+        print("=== Exporting dump files locally ===")
+
+        export_path = arg.local_export / identifier
+        export_path.mkdir(parents=True, exist_ok=True)
+        print(f"Files will be exported to: {export_path.absolute()!r}")
+
+        for (remote_dest, local_src) in filedict.items():
+            remote_dest = export_path / remote_dest
+            print(f"\t{remote_dest} from {local_src}")
+            remote_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(local_src, remote_dest)
+
+        with open(export_path / "__ia_meta.json", "w", encoding="utf-8") as f:
+            metadata.pop("upload-state") # don't set upload-state in the metadata for local exports
+            f.write(json.dumps(metadata, indent=4, sort_keys=True))
+        with open(export_path / "__uploader_meta.json", "w", encoding="utf-8") as f:
+            f.write(json.dumps({"setUploadState": True}, indent=4))
+
+        mark_as_done(config, UPLOADED_MARK, msg=f"exported to: {export_path.absolute()}")
+        return
+
+
     print("=== Checking IA S3 load average (optional) ===")
 
     try:
@@ -437,12 +464,8 @@ def upload(arg: Args):
         print(f"Failed to get IA S3 load average: {e}")
         print("Don't worry, it's optional.")
 
-
-    if arg.dry_run:
-        print("=== Dry run, exiting ===")
-        return
-
     print("=== Uploading ===")
+    ia_keys = read_ia_keys(arg.keys_file)
     upload_main_resouces(item, filedict, metadata, ia_keys)
     
     item = get_item(identifier)
@@ -523,6 +546,8 @@ def main():
     parser.add_argument("--bin-7z", default=SevenZipCompressor.bin_7z, dest="bin_7z",
                         help=f"Path to 7z binary. [default: {SevenZipCompressor.bin_7z}] ")
     parser.add_argument("--parallel", action="store_true", help="Parallelize compression tasks")
+    parser.add_argument("--local-export", dest="local_export", type=Path,
+                        help="Path to export completed dump locally instead of uploading it to the Internet Archive")
     parser.add_argument("wikidump_dir")
     
     arg = Args(**vars(parser.parse_args()))
