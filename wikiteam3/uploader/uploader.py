@@ -429,8 +429,9 @@ def upload(arg: Args):
         print("=== Exporting dump files locally ===")
 
         export_path = arg.local_export / identifier
-        export_path.mkdir(parents=True, exist_ok=True)
         print(f"Files will be exported to: {export_path.absolute()!r}")
+
+        export_path.mkdir(parents=True, exist_ok=True)
 
         for (remote_dest, local_src) in filedict.items():
             remote_dest = export_path / remote_dest
